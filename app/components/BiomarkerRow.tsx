@@ -81,13 +81,9 @@ export default function BiomarkerRow({ b }: { b: Biomarker }) {
                 <td className="py-3.5 pr-4">
                     <StatusBadge status={b.optimalStatus} small />
                 </td>
-            </tr>
-
-            {/* ── Expanded detail row ───────────────────────────────────────────── */}
-            {/* Only rendered when open is true — conditionally mounted for performance */}
-            {open && (
+            </tr>{open && (
                 <tr className="border-b border-slate-100 dark:border-slate-800">
-                    <td /> {/* empty cell to align with the chevron column */}
+                    <td />{/* empty cell to align with the chevron column */}
                     <td colSpan={5} className="pb-5 pr-4">
                         <div className="rounded-xl border border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 p-4">
 

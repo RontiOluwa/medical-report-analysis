@@ -1,12 +1,15 @@
 // ─── Tests: useAnalyze hook ───────────────────────────────────────────────────
-// Tests the state machine: idle → loading → result | error
-// and the reset flow back to idle.
-// The fetch API is mocked so no real HTTP requests are made.
+// Tests the state machine: idle → loading → result | error and the reset flow.
+//
+// Key fix: React 19 is stricter about state updates outside act().
+// We use waitFor() instead of wrapping handleFile in act() — waitFor internally
+// wraps each check in act(), which correctly handles async state flushes after
+// fetch resolves.
 
 import { renderHook, act, waitFor } from '@testing-library/react';
 import { useAnalyze } from '@/app/hooks/useAnalyze';
 
-// ── Mock fetch ────────────────────────────────────────────────────────────────
+// Mock global fetch so no real HTTP requests are made
 const mockFetch = jest.fn();
 global.fetch = mockFetch;
 
@@ -17,21 +20,21 @@ const mockReport = {
     biomarkers: [],
 };
 
-// Helper — sets up fetch to return a success response
+// Sets up fetch to return a successful analysis response
 function mockSuccess() {
     mockFetch.mockResolvedValueOnce({
         json: async () => ({ success: true, data: mockReport }),
     });
 }
 
-// Helper — sets up fetch to return an error response
+// Sets up fetch to return an API-level failure response
 function mockFailure(error = 'Analysis failed.') {
     mockFetch.mockResolvedValueOnce({
         json: async () => ({ success: false, error }),
     });
 }
 
-// Helper — creates a minimal File object for upload simulation
+// Creates a minimal File for upload simulation
 function makeFile() {
     return new File(['pdf content'], 'report.pdf', { type: 'application/pdf' });
 }
@@ -39,7 +42,7 @@ function makeFile() {
 describe('useAnalyze', () => {
     beforeEach(() => {
         jest.clearAllMocks();
-        jest.useFakeTimers(); // control the step interval timer
+        jest.useFakeTimers();
     });
 
     afterEach(() => {
@@ -59,45 +62,41 @@ describe('useAnalyze', () => {
 
     // ── Loading state ───────────────────────────────────────────────────────────
 
-    it('transitions to loading state immediately when handleFile is called', async () => {
+    it('transitions to loading immediately when handleFile is called', () => {
         mockSuccess();
         const { result } = renderHook(() => useAnalyze());
 
-        act(() => {
-            result.current.handleFile(makeFile());
-        });
+        // Kick off the async handleFile — don't await so we can check the loading state
+        act(() => { result.current.handleFile(makeFile()); });
 
-        // Should be in loading state before the fetch resolves
         expect(result.current.state).toBe('loading');
         expect(result.current.fileName).toBe('report.pdf');
     });
 
-    it('advances the step counter over time during loading', async () => {
+    it('advances the step counter over time during loading', () => {
         mockSuccess();
         const { result } = renderHook(() => useAnalyze());
 
         act(() => { result.current.handleFile(makeFile()); });
         expect(result.current.step).toBe(0);
 
-        // Advance 1.8s — the step interval fires once
+        // Each 1800ms interval advances the step by 1
         act(() => { jest.advanceTimersByTime(1800); });
         expect(result.current.step).toBe(1);
 
-        // Advance another 1.8s — step advances again
         act(() => { jest.advanceTimersByTime(1800); });
         expect(result.current.step).toBe(2);
     });
 
-    it('clamps the step at the last step index', async () => {
+    it('clamps the step at the last step index', () => {
         mockSuccess();
         const { result } = renderHook(() => useAnalyze());
 
         act(() => { result.current.handleFile(makeFile()); });
-
-        // Advance well past the number of steps
+        // Advance well past all steps
         act(() => { jest.advanceTimersByTime(20000); });
 
-        // Step should not exceed LOADING_STEPS.length - 1 (index 3)
+        // Should be clamped at index 3 (LOADING_STEPS.length - 1)
         expect(result.current.step).toBe(3);
     });
 
@@ -107,11 +106,14 @@ describe('useAnalyze', () => {
         mockSuccess();
         const { result } = renderHook(() => useAnalyze());
 
-        await act(async () => {
-            await result.current.handleFile(makeFile());
+        act(() => { result.current.handleFile(makeFile()); });
+
+        // waitFor polls until the assertion passes, wrapping each check in act()
+        // This correctly handles the async state updates after fetch resolves
+        await waitFor(() => {
+            expect(result.current.state).toBe('result');
         });
 
-        expect(result.current.state).toBe('result');
         expect(result.current.report).toEqual(mockReport);
         expect(result.current.errorMsg).toBe('');
     });
@@ -122,11 +124,12 @@ describe('useAnalyze', () => {
         mockFailure('The AI service is temporarily overloaded.');
         const { result } = renderHook(() => useAnalyze());
 
-        await act(async () => {
-            await result.current.handleFile(makeFile());
+        act(() => { result.current.handleFile(makeFile()); });
+
+        await waitFor(() => {
+            expect(result.current.state).toBe('error');
         });
 
-        expect(result.current.state).toBe('error');
         expect(result.current.errorMsg).toBe('The AI service is temporarily overloaded.');
         expect(result.current.report).toBeNull();
     });
@@ -135,11 +138,12 @@ describe('useAnalyze', () => {
         mockFetch.mockRejectedValueOnce(new Error('Network error'));
         const { result } = renderHook(() => useAnalyze());
 
-        await act(async () => {
-            await result.current.handleFile(makeFile());
+        act(() => { result.current.handleFile(makeFile()); });
+
+        await waitFor(() => {
+            expect(result.current.state).toBe('error');
         });
 
-        expect(result.current.state).toBe('error');
         expect(result.current.errorMsg).toBe('Network error');
     });
 
@@ -149,13 +153,11 @@ describe('useAnalyze', () => {
         mockSuccess();
         const { result } = renderHook(() => useAnalyze());
 
-        // Get to result state
-        await act(async () => {
-            await result.current.handleFile(makeFile());
-        });
-        expect(result.current.state).toBe('result');
+        // Reach result state first
+        act(() => { result.current.handleFile(makeFile()); });
+        await waitFor(() => { expect(result.current.state).toBe('result'); });
 
-        // Reset
+        // Now reset
         act(() => { result.current.reset(); });
 
         expect(result.current.state).toBe('idle');
@@ -169,17 +171,17 @@ describe('useAnalyze', () => {
         // First attempt fails
         mockFailure();
         const { result } = renderHook(() => useAnalyze());
-        await act(async () => { await result.current.handleFile(makeFile()); });
-        expect(result.current.state).toBe('error');
+        act(() => { result.current.handleFile(makeFile()); });
+        await waitFor(() => { expect(result.current.state).toBe('error'); });
 
-        // Reset
+        // Reset back to idle
         act(() => { result.current.reset(); });
         expect(result.current.state).toBe('idle');
 
         // Second attempt succeeds
         mockSuccess();
-        await act(async () => { await result.current.handleFile(makeFile()); });
-        expect(result.current.state).toBe('result');
+        act(() => { result.current.handleFile(makeFile()); });
+        await waitFor(() => { expect(result.current.state).toBe('result'); });
         expect(result.current.report).toEqual(mockReport);
     });
 
@@ -188,9 +190,9 @@ describe('useAnalyze', () => {
     it('POSTs to /api/analyze with the file as FormData', async () => {
         mockSuccess();
         const { result } = renderHook(() => useAnalyze());
-        const file = makeFile();
 
-        await act(async () => { await result.current.handleFile(file); });
+        act(() => { result.current.handleFile(makeFile()); });
+        await waitFor(() => { expect(result.current.state).toBe('result'); });
 
         expect(mockFetch).toHaveBeenCalledWith('/api/analyze', expect.objectContaining({
             method: 'POST',

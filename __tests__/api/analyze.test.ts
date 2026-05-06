@@ -1,17 +1,21 @@
-// ─── Tests: /api/analyze route ───────────────────────────────────────────────
-// Tests HTTP-level concerns: input validation (missing file, wrong type, too
-// large), and the success path. The Claude service is mocked so no real API
-// calls are made.
+/**
+ * @jest-environment node
+ *
+ * Route handlers use Next.js's NextRequest which requires the Web APIs
+ * (Request, Response, FormData, Headers). These are available natively
+ * in Node 18+ but NOT in jsdom. Switching to the node environment here
+ * fixes the "Request is not defined" error without any extra polyfills.
+ */
 
 import { POST } from '@/app/api/analyze/route';
 import { NextRequest } from 'next/server';
 import * as claudeService from '@/lib/claude';
 
-// Mock the entire Claude service module
+// Mock the entire Claude service module so no real API calls are made
 jest.mock('@/lib/claude');
 const mockAnalyze = claudeService.analyzeLabReport as jest.Mock;
 
-// Minimal valid LabReport returned by the mocked service
+// Minimal valid LabReport returned by the mocked Claude service
 const mockReport = {
     patient: { age: 48, sex: 'male' },
     reportDate: '2026-02-23',
@@ -28,7 +32,7 @@ async function buildRequest(file?: File): Promise<NextRequest> {
     });
 }
 
-// Helper — creates a File with given size and type
+// Helper — creates a File with the given size and MIME type
 function makeFile(name: string, sizeBytes: number, type: string): File {
     const content = new Uint8Array(sizeBytes);
     return new File([content], name, { type });
@@ -44,7 +48,7 @@ describe('POST /api/analyze', () => {
     // ── Input validation ────────────────────────────────────────────────────────
 
     it('returns 400 when no file is attached', async () => {
-        const req = await buildRequest(); // no file appended
+        const req = await buildRequest();
         const res = await POST(req);
         const json = await res.json();
 
@@ -90,10 +94,8 @@ describe('POST /api/analyze', () => {
     it('calls analyzeLabReport with a base64 string', async () => {
         mockAnalyze.mockResolvedValueOnce(mockReport);
 
-        const req = await buildRequest(validPDF);
-        await POST(req);
+        await POST(await buildRequest(validPDF));
 
-        // analyzeLabReport should be called once with a non-empty base64 string
         expect(mockAnalyze).toHaveBeenCalledTimes(1);
         const base64Arg = mockAnalyze.mock.calls[0][0];
         expect(typeof base64Arg).toBe('string');
@@ -106,8 +108,7 @@ describe('POST /api/analyze', () => {
         const overloadedError = Object.assign(new Error('Overloaded'), { status: 529 });
         mockAnalyze.mockRejectedValueOnce(overloadedError);
 
-        const req = await buildRequest(validPDF);
-        const res = await POST(req);
+        const res = await POST(await buildRequest(validPDF));
         const json = await res.json();
 
         expect(res.status).toBe(503);
@@ -118,8 +119,7 @@ describe('POST /api/analyze', () => {
     it('returns 500 with a parse error message on SyntaxError', async () => {
         mockAnalyze.mockRejectedValueOnce(new SyntaxError('Unexpected token'));
 
-        const req = await buildRequest(validPDF);
-        const res = await POST(req);
+        const res = await POST(await buildRequest(validPDF));
         const json = await res.json();
 
         expect(res.status).toBe(500);
@@ -130,8 +130,7 @@ describe('POST /api/analyze', () => {
     it('returns 500 with a generic message on unexpected errors', async () => {
         mockAnalyze.mockRejectedValueOnce(new Error('Something unexpected'));
 
-        const req = await buildRequest(validPDF);
-        const res = await POST(req);
+        const res = await POST(await buildRequest(validPDF));
         const json = await res.json();
 
         expect(res.status).toBe(500);

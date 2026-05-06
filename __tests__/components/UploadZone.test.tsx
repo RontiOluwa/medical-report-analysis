@@ -2,19 +2,26 @@
 // Tests file validation (type and size), the onFile callback, drag state,
 // and disabled behavior during loading.
 
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
+import { render, screen, fireEvent, act } from '@testing-library/react';
 import UploadZone from '@/app/components/UploadZone';
 
 // Helper — creates a File object with the given name, size, and MIME type
 function makeFile(name: string, sizeBytes: number, type: string): File {
-    const content = new Array(sizeBytes).fill('a').join('');
+    const content = new Uint8Array(sizeBytes);
     return new File([content], name, { type });
 }
 
 const validPDF = makeFile('report.pdf', 1024, 'application/pdf');
-const largePDF = makeFile('large.pdf', 11 * 1024 * 1024, 'application/pdf'); // 11MB — over limit
-const imageFile = makeFile('photo.png', 1024, 'image/png');                  // wrong type
+const largePDF = makeFile('large.pdf', 11 * 1024 * 1024, 'application/pdf');
+const imageFile = makeFile('photo.png', 1024, 'image/png');
+
+// Helper — fires a change event on the hidden file input with the given file.
+// userEvent.upload does not reliably trigger onChange on hidden inputs in all
+// versions of @testing-library/user-event, so we use fireEvent.change directly.
+function uploadFile(file: File) {
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+    fireEvent.change(input, { target: { files: [file] } });
+}
 
 describe('UploadZone', () => {
 
@@ -36,55 +43,48 @@ describe('UploadZone', () => {
 
     // ── Valid file selection ────────────────────────────────────────────────────
 
-    it('calls onFile with a valid PDF when selected via the input', async () => {
+    it('calls onFile with a valid PDF when selected via the input', () => {
         const onFile = jest.fn();
         render(<UploadZone onFile={onFile} loading={false} />);
 
-        const input = document.querySelector('input[type="file"]') as HTMLInputElement;
-        await userEvent.upload(input, validPDF);
+        uploadFile(validPDF);
 
-        // onFile should be called once with the valid file
         expect(onFile).toHaveBeenCalledTimes(1);
         expect(onFile).toHaveBeenCalledWith(validPDF);
     });
 
     // ── Validation errors ───────────────────────────────────────────────────────
 
-    it('shows an error and does not call onFile for a non-PDF file', async () => {
+    it('shows an error and does not call onFile for a non-PDF file', () => {
         const onFile = jest.fn();
         render(<UploadZone onFile={onFile} loading={false} />);
 
-        const input = document.querySelector('input[type="file"]') as HTMLInputElement;
-        await userEvent.upload(input, imageFile);
+        uploadFile(imageFile);
 
-        // Error message should appear
         expect(screen.getByText('Only PDF files are supported.')).toBeInTheDocument();
-        // onFile should not be called for an invalid file
         expect(onFile).not.toHaveBeenCalled();
     });
 
-    it('shows an error and does not call onFile for a PDF over 10MB', async () => {
+    it('shows an error and does not call onFile for a PDF over 10MB', () => {
         const onFile = jest.fn();
         render(<UploadZone onFile={onFile} loading={false} />);
 
-        const input = document.querySelector('input[type="file"]') as HTMLInputElement;
-        await userEvent.upload(input, largePDF);
+        uploadFile(largePDF);
 
         expect(screen.getByText('File must be under 10MB.')).toBeInTheDocument();
         expect(onFile).not.toHaveBeenCalled();
     });
 
-    it('clears a previous error when a valid file is selected', async () => {
+    it('clears a previous error when a valid file is selected', () => {
         const onFile = jest.fn();
         render(<UploadZone onFile={onFile} loading={false} />);
-        const input = document.querySelector('input[type="file"]') as HTMLInputElement;
 
-        // First upload an invalid file to trigger an error
-        await userEvent.upload(input, imageFile);
+        // Trigger error with invalid file
+        uploadFile(imageFile);
         expect(screen.getByText('Only PDF files are supported.')).toBeInTheDocument();
 
-        // Then upload a valid PDF — the error should disappear
-        await userEvent.upload(input, validPDF);
+        // Upload valid file — error should disappear
+        uploadFile(validPDF);
         expect(screen.queryByText('Only PDF files are supported.')).not.toBeInTheDocument();
     });
 
@@ -94,10 +94,8 @@ describe('UploadZone', () => {
         render(<UploadZone onFile={jest.fn()} loading={false} />);
         const label = screen.getByText('Drop your lab report here').closest('label')!;
 
-        // Simulate a file being dragged over the drop zone
         fireEvent.dragOver(label, { preventDefault: () => { } });
 
-        // The drag-active border class should be applied
         expect(label).toHaveClass('border-brand-500');
     });
 
@@ -108,16 +106,14 @@ describe('UploadZone', () => {
         fireEvent.dragOver(label, { preventDefault: () => { } });
         fireEvent.dragLeave(label);
 
-        // Drag-active class should be removed after leave
         expect(label).not.toHaveClass('border-brand-500');
     });
 
-    it('calls onFile when a valid PDF is dropped', async () => {
+    it('calls onFile when a valid PDF is dropped', () => {
         const onFile = jest.fn();
         render(<UploadZone onFile={onFile} loading={false} />);
         const label = screen.getByText('Drop your lab report here').closest('label')!;
 
-        // Simulate dropping a valid PDF file
         fireEvent.drop(label, {
             preventDefault: () => { },
             dataTransfer: { files: [validPDF] },
@@ -133,11 +129,8 @@ describe('UploadZone', () => {
         const input = document.querySelector('input[type="file"]') as HTMLInputElement;
         const label = screen.getByText('Drop your lab report here').closest('label')!;
 
-        // Input should be disabled
         expect(input).toBeDisabled();
-        // Label should have the pointer-events-none class to block clicks
         expect(label).toHaveClass('pointer-events-none');
-        // Visual opacity should be reduced
         expect(label).toHaveClass('opacity-60');
     });
 });
