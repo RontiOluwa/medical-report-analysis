@@ -165,6 +165,137 @@ Open [http://localhost:3000](http://localhost:3000).
 
 ---
 
+## Testing
+
+The test suite covers four layers of the application — lib utilities, React hooks, UI components, and the API route handler. All external dependencies (Anthropic SDK, fetch) are mocked so tests run without network access or API keys.
+
+### Setup
+
+```bash
+npm install
+npm test                  # run all tests once
+npm run test:watch        # watch mode during development
+npm run test:coverage     # generate coverage report
+```
+
+### Test Structure
+
+#### `__tests__/lib/claude.test.ts` — Claude service unit tests
+
+Tests the JSON extraction, sanitization, and retry logic in `lib/claude.ts` in complete isolation from the Anthropic SDK.
+
+| Test                                 | What it verifies                                                               |
+| ------------------------------------ | ------------------------------------------------------------------------------ |
+| Parses clean JSON response           | Happy path — valid JSON returned directly                                      |
+| Extracts JSON from markdown fences   | Claude occasionally wraps output in ```json blocks                             |
+| Extracts JSON when prose precedes it | Claude sometimes adds an explanation before the JSON object                    |
+| Sanitizes Unicode arrow characters   | `↑` / `↓` can corrupt JSON at high token counts — replaced with `HIGH` / `LOW` |
+| Passes base64 string to the API      | Verifies the correct data reaches the Anthropic SDK                            |
+| Throws SyntaxError on no JSON        | Plain text response with no JSON object                                        |
+| Throws immediately on non-529 errors | Auth errors, bad requests — no retry                                           |
+| Retries up to 3 times on 529         | 3 failures then success — verifies 4 total calls                               |
+| Throws after exhausting all retries  | All 4 attempts fail — error propagates                                         |
+
+#### `__tests__/hooks/useAnalyze.test.ts` — Hook state machine tests
+
+Tests the full `idle → loading → result | error` state machine using fake timers to control the step interval without real delays.
+
+| Test                                    | What it verifies                                        |
+| --------------------------------------- | ------------------------------------------------------- |
+| Starts in idle state                    | Initial values of all state fields                      |
+| Transitions to loading immediately      | State updates before fetch resolves                     |
+| Advances step counter over time         | 1800ms interval increments the step                     |
+| Clamps step at last index               | Step never exceeds `LOADING_STEPS.length - 1`           |
+| Transitions to result on success        | Report stored, state becomes `result`                   |
+| Transitions to error on API failure     | `success: false` response sets error state              |
+| Transitions to error on network failure | Thrown fetch error sets error state                     |
+| Resets all state to idle                | All fields return to initial values                     |
+| Handles new file after error reset      | Full round-trip: error → reset → success                |
+| POSTs to correct endpoint with FormData | Verifies fetch is called with the right method and body |
+
+#### `__tests__/components/StatusBadge.test.tsx` — Badge component tests
+
+| Test                                     | What it verifies                               |
+| ---------------------------------------- | ---------------------------------------------- |
+| Renders correct label for each status    | "Optimal", "Normal", "Out of Range"            |
+| Applies correct color classes            | Green / blue / red Tailwind classes per status |
+| Small variant applies smaller text class | `text-[10px]` vs `text-xs`                     |
+| All statuses render without crashing     | Smoke test for each enum value                 |
+
+#### `__tests__/components/UploadZone.test.tsx` — Upload component tests
+
+| Test                                      | What it verifies                                     |
+| ----------------------------------------- | ---------------------------------------------------- |
+| Renders drop zone with instructional text | Static content present on mount                      |
+| Hidden input accepts PDF only             | `accept="application/pdf"` attribute                 |
+| Calls onFile with a valid PDF             | Happy path file selection                            |
+| Rejects non-PDF files with error message  | Wrong MIME type — error shown, onFile not called     |
+| Rejects PDFs over 10MB with error message | Size limit — error shown, onFile not called          |
+| Clears error when valid file is selected  | Previous error disappears on valid upload            |
+| Highlights drop zone on dragOver          | Brand border class applied during drag               |
+| Removes highlight on dragLeave            | Drag-active class removed                            |
+| Calls onFile when valid PDF is dropped    | Drop event triggers file handler                     |
+| Disables interaction during loading       | Input disabled, pointer-events-none, opacity reduced |
+
+#### `__tests__/components/BiomarkerRow.test.tsx` — Row component tests
+
+| Test                                   | What it verifies                              |
+| -------------------------------------- | --------------------------------------------- |
+| Renders biomarker name, value, unit    | Core data visible in the collapsed row        |
+| Renders lab reference range            | Formatted range string in the row             |
+| Renders ↑ arrow for HIGH flag          | Visual arrow converted from safe ASCII string |
+| Renders ↓ arrow for LOW flag           | Downward arrow for below-range values         |
+| Renders no arrow when flag is null     | In-range values show no flag                  |
+| Detail panel hidden initially          | Clinical note not in DOM before click         |
+| Shows detail panel on click            | Note, range bar, and range cards appear       |
+| Shows longevity optimal range in panel | Optimal range value visible when expanded     |
+| Hides panel on second click            | Toggle collapses the detail view              |
+| Renders optimal status badge           | StatusBadge present in the row                |
+
+#### `__tests__/components/RangeBar.test.tsx` — Range bar component tests
+
+| Test                                    | What it verifies                      |
+| --------------------------------------- | ------------------------------------- |
+| Renders when reference range is defined | Track container present in DOM        |
+| Renders three child layers              | Reference bar, optimal bar, value dot |
+| Returns null when both ranges are null  | Nothing rendered with no range data   |
+| Red dot for out_of_range status         | `bg-red-500` class on dot             |
+| Brand dot for optimal status            | `bg-brand-500` class on dot           |
+| Blue dot for normal status              | `bg-blue-500` class on dot            |
+| Dot positioned between 0% and 100%      | Axis position is a valid percentage   |
+
+#### `__tests__/api/analyze.test.ts` — Route handler tests
+
+> Uses `@jest-environment node` — Next.js `NextRequest` requires Web APIs (`Request`, `FormData`, `Headers`) that are available natively in Node 18+ but not in jsdom.
+
+| Test                                     | What it verifies                                  |
+| ---------------------------------------- | ------------------------------------------------- |
+| Returns 400 — no file attached           | Missing `pdf` form field                          |
+| Returns 400 — non-PDF file               | Wrong MIME type rejected before Claude is called  |
+| Returns 400 — file over 10MB             | Size validation before Claude is called           |
+| Returns 200 with report on success       | Happy path — Claude service returns data          |
+| Passes base64 string to analyzeLabReport | Correct argument type forwarded to service        |
+| Returns 503 on 529 upstream error        | Overloaded error mapped to user-friendly response |
+| Returns 500 on SyntaxError               | JSON parse failure from Claude service            |
+| Returns 500 on unexpected error          | Generic catch-all error handling                  |
+
+### Running a Single Test File
+
+```bash
+npm test -- __tests__/lib/claude.test.ts
+npm test -- __tests__/components/StatusBadge.test.tsx
+```
+
+### Coverage
+
+```bash
+npm run test:coverage
+```
+
+Coverage is collected from all files under `app/` and `lib/`, excluding `layout.tsx` and `prompt.ts` which contain no testable logic.
+
+---
+
 ## Deployment
 
 ### Vercel (Recommended)
