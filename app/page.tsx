@@ -1,6 +1,7 @@
 'use client';
 
 import Navbar from './components/Navbar';
+import BiomarkerTable from './components/BiomarkerTable';
 import UploadZone from './components/UploadZone';
 import { useAnalyze, LOADING_STEPS } from './hooks/useAnalyze';
 
@@ -74,6 +75,10 @@ export default function Home() {
           </div>
         )}
 
+        {/* Result */}
+        {state === 'result' && report && (
+          <BiomarkerTable report={report} onReset={reset} />
+        )}
       </main>
     </div>
   );
