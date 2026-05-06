@@ -1,26 +1,67 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
+/* Dark mode: toggle via .dark class on <html> */
+@custom-variant dark (&:where(.dark, .dark *));
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
+/* Design tokens — Tailwind v4 theme in CSS */
+@theme {
+  --font-sans: "Inter", "Open Sans", system-ui, sans-serif;
+  --font-mono: "Roboto", monospace;
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+  --color-brand-50: #fff1f1;
+  --color-brand-100: #ffe0df;
+  --color-brand-200: #ffc6c4;
+  --color-brand-300: #ff9d9a;
+  --color-brand-400: #ff6360;
+  --color-brand-500: #f63d35;
+  --color-brand-600: #e32018;
+  --color-brand-700: #bf160f;
+  --color-brand-800: #9e1510;
+  --color-brand-900: #821814;
+  --color-brand-950: #470705;
+
+  --animate-fade-up: fadeUp 0.4s ease forwards;
+  --animate-fade-in: fadeIn 0.3s ease forwards;
+
+  @keyframes fadeUp {
+    0% {
+      opacity: 0;
+      transform: translateY(10px);
+    }
+    100% {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  @keyframes fadeIn {
+    0% {
+      opacity: 0;
+    }
+    100% {
+      opacity: 1;
+    }
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+@layer base {
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  body {
+    @apply bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100;
+  }
+
+  ::-webkit-scrollbar {
+    width: 4px;
+    height: 4px;
+  }
+  ::-webkit-scrollbar-track {
+    @apply bg-transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply bg-slate-300 dark:bg-slate-700 rounded-full;
+  }
 }
