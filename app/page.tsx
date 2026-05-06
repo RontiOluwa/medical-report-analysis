@@ -15,6 +15,8 @@ export default function Home() {
 
       {/* Main */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 py-8 sm:py-12">
+
+        {/* Idle / Error */}
         {(state === 'idle' || state === 'error') && (
           <div className="flex flex-col items-center">
             <div className="text-center mb-10 animate-fade-up">
@@ -49,6 +51,29 @@ export default function Home() {
             </div>
           </div>
         )}
+
+        {/* Loading */}
+        {state === 'loading' && (
+          <div className="flex flex-col items-center py-16 animate-fade-up">
+            <div className="w-12 h-12 rounded-2xl bg-brand-50 dark:bg-brand-950/50 border border-brand-200 dark:border-brand-800 flex items-center justify-center mb-6">
+              <svg className="w-5 h-5 text-brand-500 dark:text-brand-400 animate-spin" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+              </svg>
+            </div>
+            <h2 className="text-lg font-semibold text-slate-800 dark:text-slate-100 mb-1">Analyzing your report</h2>
+            <p className="text-sm font-mono text-slate-400 dark:text-slate-500 mb-8 truncate max-w-xs">{fileName}</p>
+            <div className="space-y-3 w-full max-w-xs">
+              {LOADING_STEPS.map((s, i) => (
+                <div key={s} className={`flex items-center gap-3 transition-opacity duration-500 ${i <= step ? 'opacity-100' : 'opacity-25'}`}>
+                  <div className={`w-2 h-2 rounded-full flex-shrink-0 ${i < step ? 'bg-brand-500 dark:bg-brand-400' : i === step ? 'bg-brand-400 animate-pulse' : 'bg-slate-200 dark:bg-slate-700'}`} />
+                  <span className={`text-sm font-mono ${i <= step ? 'text-slate-700 dark:text-slate-300' : 'text-slate-300 dark:text-slate-600'}`}>{s}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
       </main>
     </div>
   );
