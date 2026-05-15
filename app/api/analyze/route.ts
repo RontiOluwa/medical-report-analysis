@@ -1,82 +1,62 @@
 // ─── /api/analyze Route Handler ──────────────────────────────────────────────
-// POST endpoint responsible solely for HTTP concerns:
-//   1. Parse and validate the incoming multipart form data
-//   2. Encode the PDF as base64
-//   3. Delegate to the Claude analysis service
-//   4. Format and return the HTTP response
-//
-// All Claude API logic (model call, retry, parsing) lives in lib/claude.ts.
+// Receives the S3 key from the browser after the PDF has been uploaded to S3.
+// Reads the PDF from S3 and delegates to the AI orchestrator.
 
 import { NextRequest, NextResponse } from 'next/server';
+import { getPDFBuffer } from '@/lib/s3';
 import { analyzeLabReport } from '@/lib/claude';
 import { AnalyzeResponse } from '@/lib/types';
 
-// Extend the default Next.js function timeout to 120s to accommodate
-// Claude inference time plus up to 3 retry delays (max ~14s of wait).
+interface AnalyzeResponseExtended extends AnalyzeResponse {
+    provider?: 'claude' | 'openai';
+}
+
 export const maxDuration = 120;
 
-export async function POST(req: NextRequest): Promise<NextResponse<AnalyzeResponse>> {
+export async function POST(req: NextRequest): Promise<NextResponse<AnalyzeResponseExtended>> {
     try {
-        // ── Input validation ────────────────────────────────────────────────────
+        // Parse JSON body — browser sends { s3Key: "uploads/user/..." }
+        const body = await req.json();
+        const { s3Key } = body;
 
-        // Parse the incoming multipart form data from the client upload.
-        const formData = await req.formData();
-
-        // Extract the PDF file field — returns null if the field is missing.
-        const file = formData.get('pdf') as File | null;
-
-        // Reject requests with no file attached.
-        if (!file) {
-            return NextResponse.json({ success: false, error: 'No PDF file provided.' }, { status: 400 });
-        }
-
-        // Reject non-PDF files — Claude's document input only supports PDF.
-        if (file.type !== 'application/pdf') {
-            return NextResponse.json({ success: false, error: 'File must be a PDF.' }, { status: 400 });
-        }
-
-        // Reject files over 10MB to prevent excessive base64 payload sizes.
-        if (file.size > 10 * 1024 * 1024) {
-            return NextResponse.json({ success: false, error: 'File size must be under 10MB.' }, { status: 400 });
-        }
-
-        // ── PDF encoding ────────────────────────────────────────────────────────
-
-        // Read the file into a binary buffer then encode as base64.
-        // This format is required by the Anthropic document input API.
-        const arrayBuffer = await file.arrayBuffer();
-        const base64 = Buffer.from(arrayBuffer).toString('base64');
-
-        // ── Analysis ────────────────────────────────────────────────────────────
-
-        // Delegate to the Claude service — handles the API call, retry logic,
-        // response parsing, and JSON sanitization.
-        const data = await analyzeLabReport(base64);
-
-        // Return the structured LabReport to the client.
-        return NextResponse.json({ success: true, data });
-
-    } catch (err) {
-        // ── Error handling ──────────────────────────────────────────────────────
-        console.error('[analyze] error:', err);
-
-        // 529 Overloaded — all retries in the Claude service were exhausted.
-        if (typeof err === 'object' && err !== null && 'status' in err && (err as { status: number }).status === 529) {
+        if (!s3Key || typeof s3Key !== 'string') {
             return NextResponse.json(
-                { success: false, error: 'The AI service is temporarily overloaded. Please try again in a moment.' },
-                { status: 503 }
+                { success: false, error: 'Missing s3Key in request body.' },
+                { status: 400 }
             );
         }
 
-        // SyntaxError — Claude returned a response that couldn't be parsed as JSON.
+        // Read the PDF from S3 as a Buffer
+        const pdfBuffer = await getPDFBuffer(s3Key);
+        const base64 = pdfBuffer.toString('base64');
+
+        // Run the AI analysis pipeline
+        const data = await analyzeLabReport(base64);
+
+        return NextResponse.json({ success: true, data });
+
+    } catch (err) {
+        console.error('[analyze] error:', err);
+
+        if (err instanceof Error && err.message.includes('Both AI providers')) {
+            return NextResponse.json({ success: false, error: err.message }, { status: 503 });
+        }
+        if (err instanceof Error && err.message.includes('not found in S3')) {
+            return NextResponse.json(
+                { success: false, error: 'PDF not found. Please upload again.' },
+                { status: 404 }
+            );
+        }
         if (err instanceof SyntaxError) {
             return NextResponse.json(
-                { success: false, error: 'Failed to parse AI response as JSON.' },
+                { success: false, error: 'Failed to parse AI response.' },
                 { status: 500 }
             );
         }
 
-        // Catch-all for any other unexpected errors.
-        return NextResponse.json({ success: false, error: 'An unexpected error occurred.' }, { status: 500 });
+        return NextResponse.json(
+            { success: false, error: 'An unexpected error occurred.' },
+            { status: 500 }
+        );
     }
 }

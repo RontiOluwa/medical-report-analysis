@@ -47,47 +47,55 @@ export function useAnalyze() {
     // Transitions to loading, kicks off the step timer, POSTs to /api/analyze,
     // then transitions to result or error based on the response.
     const handleFile = useCallback(async (file: File) => {
-        // Transition to loading state and store the file name for display.
         setState('loading');
         setFileName(file.name);
         setStep(0);
 
-        // Advance the loading step indicator every 1.8s to give the appearance
-        // of progress while the API call runs in the background.
         const stepInterval = setInterval(() => {
-            setStep(s => Math.min(s + 1, LOADING_STEPS.length - 1)); // clamp at last step
+            setStep(s => Math.min(s + 1, LOADING_STEPS.length - 1));
         }, 1800);
 
         try {
-            // Wrap the file in FormData so it can be sent as a multipart upload.
-            const formData = new FormData();
-            formData.append('pdf', file);
+            // ── Step 1: Get a presigned upload URL from Lambda ──────────────────────
+            const urlRes = await fetch('/api/upload-url', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+            });
 
-            // POST the PDF to the server-side analysis route.
-            const res = await fetch('/api/analyze', { method: 'POST', body: formData });
+            if (!urlRes.ok) throw new Error('Failed to get upload URL.');
+            const { uploadUrl, s3Key } = await urlRes.json();
 
-            // Parse the JSON response body.
+            // ── Step 2: Upload PDF directly to S3 ──────────────────────────────────
+            // This request goes directly from the browser to S3 — Lambda is not involved.
+            // No file size limit. Large PDFs upload without any issues.
+            const uploadRes = await fetch(uploadUrl, {
+                method: 'PUT',
+                body: file,
+                headers: { 'Content-Type': 'application/pdf' },
+            });
+
+            if (!uploadRes.ok) throw new Error('Failed to upload PDF to storage.');
+
+            // ── Step 3: Trigger AI analysis with the S3 key ─────────────────────────
+            const res = await fetch('/api/analyze', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ s3Key }),
+            });
+
             const json = await res.json();
-
-            // Stop the step timer now that the response has arrived.
             clearInterval(stepInterval);
 
-            // If the API returned a failure flag, throw to enter the catch block.
             if (!json.success) throw new Error(json.error || 'Analysis failed.');
-
-            // Store the report and move to the result state.
             setReport(json.data);
             setState('result');
 
         } catch (err) {
-            // Stop the step timer on error so it doesn't keep running in the background.
             clearInterval(stepInterval);
-
-            // Extract a readable message from the error and transition to error state.
             setErrorMsg(err instanceof Error ? err.message : 'Something went wrong.');
             setState('error');
         }
-    }, []); // no dependencies — this function never needs to be recreated
+    }, []);
 
     // ── reset ──────────────────────────────────────────────────────────────────
     // Resets all state back to idle so the user can upload a new report.

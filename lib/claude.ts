@@ -53,7 +53,7 @@ async function callClaude(base64: string): Promise<string> {
             // Send the PDF as a native document block alongside the extraction instruction.
             // Claude reads the full PDF natively — no separate parsing library required.
             const message = await anthropic.messages.create({
-                model: 'claude-sonnet-4-20250514', // latest Sonnet for speed and accuracy
+                model: 'claude-sonnet-4-6', // latest Sonnet for speed and accuracy
                 max_tokens: 8192,                  // high limit for dense multi-panel reports
                 system: SYSTEM_PROMPT,             // extraction, classification, and output schema
                 messages: [
