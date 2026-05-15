@@ -1,0 +1,126 @@
+# ─── GitHub Actions — Deploy Workflow ────────────────────────────────────────
+# Automatically deploys the app to AWS on every push to main.
+# Pull requests deploy to a staging environment for review before merging.
+#
+# Environments:
+#   main branch   → production  (https://your-production-cloudfront-url)
+#   pull requests → staging     (temporary preview environment)
+#
+# What happens on each run:
+#   1. Install dependencies
+#   2. Run TypeScript type check
+#   3. Run all tests — deploy is blocked if any test fails
+#   4. Deploy to AWS via SST
+
+name: Deploy
+
+on:
+  # Run on every push to main — deploys to production
+  push:
+    branches:
+      - main
+
+  # Run on every pull request — deploys to staging for review
+  pull_request:
+    branches:
+      - main
+
+# Cancel any in-progress deployment for the same branch when a new push arrives.
+# Prevents two deploys running at the same time on the same environment.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: Deploy to AWS
+    runs-on: ubuntu-latest
+
+    # Set the environment name based on the branch.
+    # main → production, everything else → staging
+    env:
+      SST_STAGE: ${{ github.ref == 'refs/heads/main' && 'production' || 'staging' }}
+
+    steps:
+      # ── Step 1: Check out the code ────────────────────────────────────────
+      # Downloads your repository code onto the GitHub Actions runner machine.
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── Step 2: Set up Node.js ────────────────────────────────────────────
+      # Installs the correct Node.js version.
+      # Using Node 20 — matches the Lambda runtime.
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # ── Step 3: Set up pnpm ───────────────────────────────────────────────
+      # Installs pnpm — must happen before the cache step.
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      # ── Step 4: Cache dependencies ────────────────────────────────────────
+      # Caches node_modules between runs so pnpm install is fast.
+      # Cache is invalidated automatically when pnpm-lock.yaml changes.
+      - name: Get pnpm store directory
+        id: pnpm-cache
+        run: echo "STORE_PATH=$(pnpm store path)" >> $GITHUB_OUTPUT
+
+      - name: Cache pnpm store
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
+          key: ${{ runner.os }}-pnpm-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-
+
+      # ── Step 5: Install dependencies ─────────────────────────────────────
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # ── Step 6: TypeScript type check ────────────────────────────────────
+      # Fails the workflow if there are any type errors.
+      # Catches mistakes before they reach Lambda.
+      - name: TypeScript check
+        run: pnpm exec tsc --noEmit
+
+      # ── Step 7: Run tests ─────────────────────────────────────────────────
+      # All tests must pass before deployment proceeds.
+      # A failing test blocks the deploy — broken code never reaches production.
+      - name: Run tests
+        run: pnpm test
+        env:
+          # Tests need the API key for any integration-style tests
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+
+      # ── Step 8: Configure AWS credentials ────────────────────────────────
+      # Sets up the AWS CLI with the credentials stored in GitHub Secrets.
+      # The runner machine gets temporary access to your AWS account.
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: eu-west-1
+
+      # ── Step 9: Deploy with SST ───────────────────────────────────────────
+      # Runs `npx sst deploy` with the correct stage.
+      # main branch → production, pull requests → staging.
+      # Environment variables are injected from GitHub Secrets —
+      # this is how ANTHROPIC_API_KEY reaches Lambda in the deployed app.
+      - name: Deploy to ${{ env.SST_STAGE }}
+        run: npx sst deploy --stage ${{ env.SST_STAGE }}
+        env:
+          # These are read by SST and baked into the Lambda environment
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+
+      # ── Step 10: Post deployment URL as a comment on pull requests ────────
+      # After a staging deploy, SST outputs the CloudFront URL.
+      # This step is a placeholder — SST Ion outputs can be captured
+      # and posted as a PR comment with additional scripting if needed.
+      - name: Deployment complete
+        run: echo "Deployed to ${{ env.SST_STAGE }} successfully"
