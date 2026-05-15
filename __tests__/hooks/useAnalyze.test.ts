@@ -1,15 +1,17 @@
 // ─── Tests: useAnalyze hook ───────────────────────────────────────────────────
-// Tests the state machine: idle → loading → result | error and the reset flow.
+// Tests the state machine: idle → loading → result | error.
 //
-// Key fix: React 19 is stricter about state updates outside act().
-// We use waitFor() instead of wrapping handleFile in act() — waitFor internally
-// wraps each check in act(), which correctly handles async state flushes after
-// fetch resolves.
+// The hook now makes THREE fetch calls per analysis:
+//   1. POST /api/upload-url  → get presigned S3 URL
+//   2. PUT  {uploadUrl}      → upload directly to S3
+//   3. POST /api/analyze     → trigger AI analysis with s3Key
+//
+// All three are mocked — no real network or S3 calls.
 
 import { renderHook, act, waitFor } from '@testing-library/react';
 import { useAnalyze } from '@/app/hooks/useAnalyze';
 
-// Mock global fetch so no real HTTP requests are made
+// Mock global fetch
 const mockFetch = jest.fn();
 global.fetch = mockFetch;
 
@@ -20,21 +22,54 @@ const mockReport = {
     biomarkers: [],
 };
 
-// Sets up fetch to return a successful analysis response
+// Sets up all three fetch calls for a successful analysis flow:
+//   1. /api/upload-url → presigned URL + s3Key
+//   2. S3 PUT          → ok
+//   3. /api/analyze    → report data
 function mockSuccess() {
-    mockFetch.mockResolvedValueOnce({
-        json: async () => ({ success: true, data: mockReport }),
-    });
+    mockFetch
+        .mockResolvedValueOnce({
+            ok: true,
+            json: async () => ({
+                success: true,
+                uploadUrl: 'https://s3.amazonaws.com/bucket/test.pdf?signature=abc',
+                s3Key: 'uploads/user/test.pdf',
+            }),
+        })
+        .mockResolvedValueOnce({
+            ok: true, // S3 PUT response — no json body needed
+        })
+        .mockResolvedValueOnce({
+            ok: true,
+            json: async () => ({ success: true, data: mockReport }),
+        });
 }
 
-// Sets up fetch to return an API-level failure response
+// Sets up the upload-url call to succeed, then the analyze call to return failure
 function mockFailure(error = 'Analysis failed.') {
+    mockFetch
+        .mockResolvedValueOnce({
+            ok: true,
+            json: async () => ({
+                success: true,
+                uploadUrl: 'https://s3.amazonaws.com/bucket/test.pdf?signature=abc',
+                s3Key: 'uploads/user/test.pdf',
+            }),
+        })
+        .mockResolvedValueOnce({ ok: true }) // S3 PUT
+        .mockResolvedValueOnce({
+            ok: true,
+            json: async () => ({ success: false, error }),
+        });
+}
+
+// Sets up the upload-url call itself to fail
+function mockUploadUrlFailure() {
     mockFetch.mockResolvedValueOnce({
-        json: async () => ({ success: false, error }),
+        ok: false,
     });
 }
 
-// Creates a minimal File for upload simulation
 function makeFile() {
     return new File(['pdf content'], 'report.pdf', { type: 'application/pdf' });
 }
@@ -66,7 +101,6 @@ describe('useAnalyze', () => {
         mockSuccess();
         const { result } = renderHook(() => useAnalyze());
 
-        // Kick off the async handleFile — don't await so we can check the loading state
         act(() => { result.current.handleFile(makeFile()); });
 
         expect(result.current.state).toBe('loading');
@@ -80,7 +114,6 @@ describe('useAnalyze', () => {
         act(() => { result.current.handleFile(makeFile()); });
         expect(result.current.step).toBe(0);
 
-        // Each 1800ms interval advances the step by 1
         act(() => { jest.advanceTimersByTime(1800); });
         expect(result.current.step).toBe(1);
 
@@ -93,10 +126,8 @@ describe('useAnalyze', () => {
         const { result } = renderHook(() => useAnalyze());
 
         act(() => { result.current.handleFile(makeFile()); });
-        // Advance well past all steps
         act(() => { jest.advanceTimersByTime(20000); });
 
-        // Should be clamped at index 3 (LOADING_STEPS.length - 1)
         expect(result.current.step).toBe(3);
     });
 
@@ -108,8 +139,6 @@ describe('useAnalyze', () => {
 
         act(() => { result.current.handleFile(makeFile()); });
 
-        // waitFor polls until the assertion passes, wrapping each check in act()
-        // This correctly handles the async state updates after fetch resolves
         await waitFor(() => {
             expect(result.current.state).toBe('result');
         });
@@ -118,9 +147,22 @@ describe('useAnalyze', () => {
         expect(result.current.errorMsg).toBe('');
     });
 
-    // ── Error flow ──────────────────────────────────────────────────────────────
+    // ── Error flows ─────────────────────────────────────────────────────────────
 
-    it('transitions to error state when the API returns success: false', async () => {
+    it('transitions to error state when upload-url call fails', async () => {
+        mockUploadUrlFailure();
+        const { result } = renderHook(() => useAnalyze());
+
+        act(() => { result.current.handleFile(makeFile()); });
+
+        await waitFor(() => {
+            expect(result.current.state).toBe('error');
+        });
+
+        expect(result.current.errorMsg).toBe('Failed to get upload URL.');
+    });
+
+    it('transitions to error state when the analyze API returns success: false', async () => {
         mockFailure('The AI service is temporarily overloaded.');
         const { result } = renderHook(() => useAnalyze());
 
@@ -153,11 +195,9 @@ describe('useAnalyze', () => {
         mockSuccess();
         const { result } = renderHook(() => useAnalyze());
 
-        // Reach result state first
         act(() => { result.current.handleFile(makeFile()); });
         await waitFor(() => { expect(result.current.state).toBe('result'); });
 
-        // Now reset
         act(() => { result.current.reset(); });
 
         expect(result.current.state).toBe('idle');
@@ -168,35 +208,40 @@ describe('useAnalyze', () => {
     });
 
     it('can handle a new file after resetting from an error', async () => {
-        // First attempt fails
-        mockFailure();
+        mockUploadUrlFailure();
         const { result } = renderHook(() => useAnalyze());
+
         act(() => { result.current.handleFile(makeFile()); });
         await waitFor(() => { expect(result.current.state).toBe('error'); });
 
-        // Reset back to idle
         act(() => { result.current.reset(); });
         expect(result.current.state).toBe('idle');
 
-        // Second attempt succeeds
         mockSuccess();
         act(() => { result.current.handleFile(makeFile()); });
         await waitFor(() => { expect(result.current.state).toBe('result'); });
         expect(result.current.report).toEqual(mockReport);
     });
 
-    // ── fetch call ──────────────────────────────────────────────────────────────
+    // ── fetch call order ────────────────────────────────────────────────────────
 
-    it('POSTs to /api/analyze with the file as FormData', async () => {
+    it('makes three fetch calls in the correct order', async () => {
         mockSuccess();
         const { result } = renderHook(() => useAnalyze());
 
         act(() => { result.current.handleFile(makeFile()); });
         await waitFor(() => { expect(result.current.state).toBe('result'); });
 
-        expect(mockFetch).toHaveBeenCalledWith('/api/analyze', expect.objectContaining({
-            method: 'POST',
-            body: expect.any(FormData),
-        }));
+        // Call 1: get presigned URL
+        expect(mockFetch.mock.calls[0][0]).toBe('/api/upload-url');
+        expect(mockFetch.mock.calls[0][1].method).toBe('POST');
+
+        // Call 2: upload to S3 (presigned URL, PUT method)
+        expect(mockFetch.mock.calls[1][0]).toContain('s3.amazonaws.com');
+        expect(mockFetch.mock.calls[1][1].method).toBe('PUT');
+
+        // Call 3: trigger analysis with s3Key
+        expect(mockFetch.mock.calls[2][0]).toBe('/api/analyze');
+        expect(mockFetch.mock.calls[2][1].method).toBe('POST');
     });
 });
